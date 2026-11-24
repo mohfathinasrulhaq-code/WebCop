@@ -1,0 +1,19 @@
+name: WebCop CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Syntax check
+        run: python -m py_compile scripts/fetch_page.py scripts/analyze.py scripts/scaffold.py
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
