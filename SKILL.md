@@ -9,23 +9,25 @@ Skill untuk mempelajari arsitektur frontend dari sebuah URL publik dan menghasil
 
 ## Alur Kerja
 
+*(Jalankan skrip dari direktori skill atau gunakan path absolut ke folder `scripts/`)*
+
 1. **Fetch halaman & aset publik**
    Jalankan:
    ```bash
-   python scripts/fetch_page.py "<URL>" --out workdir
+   python "<SKILL_DIR>/scripts/fetch_page.py" "<URL>" --out workdir
    ```
    Jika diblokir oleh `robots.txt`, **berhenti** dan minta user menyimpan halaman secara manual.
 
 2. **Analisis struktur & design tokens**
    Jalankan:
    ```bash
-   python scripts/analyze.py workdir --out report_data
+   python "<SKILL_DIR>/scripts/analyze.py" workdir --out report_data
    ```
 
 3. **Buat kerangka proyek baru (scaffold)**
    Jalankan:
    ```bash
-   python scripts/scaffold.py report_data --url "<URL>" --root webcop-output
+   python "<SKILL_DIR>/scripts/scaffold.py" report_data --url "<URL>" --root webcop-output
    ```
 
 4. **Tulis ulang kode secara orisinal**

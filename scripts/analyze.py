@@ -21,8 +21,8 @@ TECH: Dict[str, List[str]] = {
     "Svelte": [r"svelte"],
     "SSR": [r"hydrate(?:Root)?\(", r"renderToString", r"data-reactroot", r"__NEXT_DATA__", r"__NUXT__"],
     "jQuery": [r"jquery"],
-    "Bootstrap": [r"bootstrap"],
-    "Tailwind CSS": [r"tailwind", r'class="[^"]*\b(?:px|py|mt|mb)-\d[^"]*"'],
+    "Bootstrap": [r"bootstrap(?:\.min)?\.(?:css|js)"],
+    "Tailwind CSS": [r"tailwindcss", r"--tw-", r'class="[^"]*\b(?:flex|grid|items-center|justify-between)\b[^"]*\b(?:px|py|mt|mb)-\d'],
     "WordPress": [r"wp-content", r"wp-includes", r'generator" content="WordPress'],
     "Joomla": [r"/media/jui/", r'generator" content="Joomla'],
     "Drupal": [r"Drupal\.settings", r"/sites/default/files/", r'generator" content="Drupal'],
@@ -117,8 +117,11 @@ def main() -> None:
 
     with open(os.path.join(args.workdir, "page.html"), encoding="utf-8", errors="ignore") as f:
         html = f.read()
-    css = read_all(args.workdir, "css/*") + "".join(re.findall(r"<style[^>]*>(.*?)</style>", html, re.S))
-    js_names = " ".join(os.listdir(os.path.join(args.workdir, "js"))) if os.path.isdir(os.path.join(args.workdir, "js")) else ""
+    css = read_all(args.workdir, "css/*") + read_all(args.workdir, "*_files/*.css") + "".join(
+        re.findall(r"<style[^>]*>(.*?)</style>", html, re.S)
+    )
+    js_files = glob.glob(os.path.join(args.workdir, "js/*")) + glob.glob(os.path.join(args.workdir, "*_files/*.js"))
+    js_names = " ".join(os.path.basename(p) for p in js_files)
     blob = html + "\n" + css + "\n" + js_names
 
     w = Walker()
@@ -164,14 +167,51 @@ def main() -> None:
         "forms": bool(w.tags.get("form")),
     }
 
-    lines = ["proyek-baru/", "├── index.html"]
-    css_n = len(glob.glob(os.path.join(args.workdir, "css/*")))
-    js_n = len(glob.glob(os.path.join(args.workdir, "js/*")))
-    if css_n or "<style" in html:
-        lines += ["├── css/", "│   ├── base.css       # reset, variabel (tokens)", "│   ├── layout.css", "│   └── components.css"]
-    if js_n or "<script" in html:
-        lines += ["├── js/", "│   └── main.js"]
-    lines += ["├── img/               # GANTI dengan aset milikmu", "└── README.md"]
+    warnings: List[str] = []
+    missing: List[str] = []
+    if not css.strip():
+        warnings.append("CSS tidak ditemukan, token desain dan layout tidak dapat dihitung.")
+        missing.append("css")
+    if not js_files and "<script" not in html:
+        missing.append("js")
+    if re.search(r'<div[^>]+id=["\'](?:root|app|__next)["\'][^>]*>\s*</div>', html, re.I):
+        warnings.append("Terindikasi SPA (root kosong); konten kemungkinan dirender oleh JavaScript.")
+
+    observed_css: List[str] = []
+    observed_js: List[str] = []
+    manifest_path = os.path.join(args.workdir, "manifest.json")
+    if os.path.exists(manifest_path):
+        with open(manifest_path, encoding="utf-8") as mf:
+            manifest = json.load(mf)
+        observed_css = [os.path.basename(c["saved"]) for c in manifest.get("css", []) if "saved" in c]
+        observed_js = [os.path.basename(j["saved"]) for j in manifest.get("js", []) if "saved" in j]
+    else:
+        observed_css = [os.path.basename(p) for p in glob.glob(os.path.join(args.workdir, "css/*")) + glob.glob(os.path.join(args.workdir, "*_files/*.css"))]
+        observed_js = [os.path.basename(p) for p in js_files]
+
+    lines = ["# Terobservasi", "situs-sumber/", "├── page.html"]
+    if observed_css:
+        lines.append("├── css/")
+        for c in observed_css[:10]:
+            lines.append(f"│   └── {c}")
+    if observed_js:
+        lines.append("├── js/")
+        for j in observed_js[:10]:
+            lines.append(f"│   └── {j}")
+    lines += [
+        "",
+        "# Saran struktur proyek baru",
+        "proyek-baru/",
+        "├── index.html",
+        "├── css/",
+        "│   ├── base.css       # reset, variabel (tokens)",
+        "│   ├── layout.css",
+        "│   └── components.css",
+        "├── js/",
+        "│   └── main.js",
+        "├── img/               # GANTI dengan aset milikmu",
+        "└── README.md",
+    ]
     structure_text = "\n".join(lines) + "\n"
 
     os.makedirs(args.out, exist_ok=True)
@@ -182,6 +222,8 @@ def main() -> None:
         "tag_counts": dict(w.tags.most_common(12)),
         "layout": layout,
         "components": components,
+        "warnings": warnings,
+        "missing": missing,
     }
     tokens = {
         "colors": top(colors, 10),

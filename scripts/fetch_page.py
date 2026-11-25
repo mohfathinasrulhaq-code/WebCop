@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """WebCop fetcher: ambil HTML/CSS/JS PUBLIK untuk dianalisis. Hanya stdlib."""
 import argparse
+import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import sys
 import time
+import urllib.error
 import urllib.request
 import urllib.robotparser
 from html.parser import HTMLParser
@@ -32,6 +35,17 @@ class AssetFinder(HTMLParser):
             self.js.append(a["src"])
         elif tag == "img" and a.get("src"):
             self.img.append(a["src"])
+
+
+def is_private_host(hostname: str) -> bool:
+    try:
+        for info in socket.getaddrinfo(hostname, None):
+            ip = ipaddress.ip_address(info[4][0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                return True
+    except Exception:
+        return True
+    return False
 
 
 def get(url: str, timeout: int = 15) -> Tuple[bytes, str]:
@@ -89,8 +103,10 @@ def main() -> None:
     max_files = int(cfg.get("max_files", args.max_files))
 
     u = urlparse(args.url)
-    if u.scheme not in ("http", "https"):
+    if u.scheme not in ("http", "https") or not u.hostname:
         sys.exit("URL harus diawali http:// atau https://")
+    if is_private_host(u.hostname):
+        sys.exit("DIBLOKIR (SSRF): hanya halaman publik yang diizinkan, bukan localhost/IP privat.")
 
     setup_logging(out_dir)
     logging.info("Memulai fetch: %s", args.url)
@@ -98,21 +114,33 @@ def main() -> None:
     robots_url = f"{u.scheme}://{u.netloc}/robots.txt"
     rp = urllib.robotparser.RobotFileParser()
     rp.set_url(robots_url)
-    robots_saved = False
+    robots_status = "missing"
     try:
         rp_data, _ = get(robots_url, timeout=10)
         robots_text = rp_data.decode("utf-8", errors="replace")
         with open(os.path.join(out_dir, "robots.txt"), "w", encoding="utf-8") as f:
             f.write(robots_text)
         rp.parse(robots_text.splitlines())
-        robots_saved = True
+        robots_status = "parsed"
         logging.info("robots.txt disimpan dari %s", robots_url)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            robots_status = "missing"
+            logging.info("robots.txt tidak ada (404): lanjut dengan sopan")
+        else:
+            robots_status = f"unreadable (HTTP {e.code})"
+            logging.warning("robots.txt tidak bisa dibaca (HTTP %d): lanjut dengan sopan", e.code)
     except Exception as e:
-        logging.info("robots.txt tidak tersedia/tidak terbaca (%s): lanjut dengan sopan", e)
+        robots_status = f"unreadable ({e})"
+        logging.warning("robots.txt tidak bisa dibaca (%s): lanjut dengan sopan", e)
 
-    if not rp.can_fetch(UA, args.url):
+    if robots_status == "parsed" and not rp.can_fetch(UA, args.url):
         logging.error("DIBLOKIR oleh robots.txt: %s", args.url)
         sys.exit("DIBLOKIR oleh robots.txt. WebCop berhenti. Minta user menyimpan halaman manual.")
+
+    crawl_delay = rp.crawl_delay(UA) if robots_status == "parsed" else None
+    if crawl_delay:
+        delay = max(delay, float(crawl_delay))
 
     os.makedirs(os.path.join(out_dir, "css"), exist_ok=True)
     os.makedirs(os.path.join(out_dir, "js"), exist_ok=True)
@@ -126,7 +154,7 @@ def main() -> None:
     finder.feed(text)
     manifest: Dict[str, object] = {
         "url": args.url,
-        "robots_txt": robots_saved,
+        "robots_txt": robots_status,
         "css": [],
         "js": [],
         "images_listed_only": [],
@@ -143,7 +171,7 @@ def main() -> None:
             if full in seen_urls:
                 continue
             seen_urls.add(full)
-            if not rp.can_fetch(UA, full):
+            if robots_status == "parsed" and not rp.can_fetch(UA, full):
                 logging.info("Dilewati (robots.txt): %s", full)
                 continue
             time.sleep(delay)
