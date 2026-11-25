@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from typing import Dict, List, Optional, Tuple
 
@@ -87,6 +88,51 @@ def top(counter: collections.Counter, n: int = 8) -> List[str]:
     return [k for k, _ in counter.most_common(n)]
 
 
+def parse_svg_files(svg_paths: List[str]) -> Dict[str, object]:
+    colors: collections.Counter = collections.Counter()
+    fonts: collections.Counter = collections.Counter()
+    radii: collections.Counter = collections.Counter()
+    layers: List[str] = []
+    viewboxes: List[str] = []
+
+    for path in svg_paths:
+        try:
+            tree = ET.parse(path)
+            root = tree.getroot()
+        except Exception:
+            continue
+        vb = root.attrib.get("viewBox")
+        if vb:
+            viewboxes.append(vb)
+        for el in root.iter():
+            tag = el.tag.split("}")[-1]
+            if tag == "g" and el.attrib.get("id"):
+                layers.append(el.attrib["id"])
+            for attr in ("fill", "stroke"):
+                val = (el.attrib.get(attr) or "").strip()
+                if re.match(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$", val):
+                    colors[normalize_hex(val)] += 1
+            ff = (el.attrib.get("font-family") or "").strip().strip("'\"")
+            if ff:
+                fonts[ff.split(",")[0].strip()] += 1
+            rx = (el.attrib.get("rx") or "").strip()
+            if rx and rx != "0":
+                radii[f"{rx}px" if rx.isdigit() else rx] += 1
+            style = el.attrib.get("style") or ""
+            for m in re.findall(r"(?:fill|stroke)\s*:\s*(#[0-9a-fA-F]{3,6})", style):
+                colors[normalize_hex(m)] += 1
+            for m in re.findall(r"font-family\s*:\s*([^;]+)", style):
+                fonts[m.split(",")[0].strip().strip("'\"")] += 1
+
+    return {
+        "colors": colors,
+        "fonts": fonts,
+        "radii": radii,
+        "layers": layers[:30],
+        "viewboxes": viewboxes,
+    }
+
+
 def render_markdown(analysis: Dict[str, object], tokens: Dict[str, object], structure: str) -> str:
     techs = ", ".join(analysis.get("technologies", [])) or "-"  # type: ignore[arg-type]
     colors = ", ".join(tokens.get("colors", [])) or "-"  # type: ignore[arg-type]
@@ -115,8 +161,20 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-    with open(os.path.join(args.workdir, "page.html"), encoding="utf-8", errors="ignore") as f:
-        html = f.read()
+    page_path = os.path.join(args.workdir, "page.html")
+    svg_paths = (
+        [args.workdir]
+        if os.path.isfile(args.workdir) and args.workdir.lower().endswith(".svg")
+        else glob.glob(os.path.join(args.workdir, "*.svg")) + glob.glob(os.path.join(args.workdir, "svg", "*.svg"))
+    )
+
+    html = ""
+    if os.path.exists(page_path):
+        with open(page_path, encoding="utf-8", errors="ignore") as f:
+            html = f.read()
+    elif not svg_paths:
+        raise FileNotFoundError(f"Tidak ditemukan page.html maupun file .svg di {args.workdir}")
+
     css = read_all(args.workdir, "css/*") + read_all(args.workdir, "*_files/*.css") + "".join(
         re.findall(r"<style[^>]*>(.*?)</style>", html, re.S)
     )
@@ -127,7 +185,19 @@ def main() -> None:
     w = Walker()
     w.feed(html)
 
-    tech = [n for n, pats in TECH.items() if any(re.search(p, blob, re.I) for p in pats)]
+    tech: List[str] = []
+    tech_evidence: List[Dict[str, str]] = []
+    for name, pats in TECH.items():
+        for p in pats:
+            m = re.search(p, blob, re.I)
+            if m:
+                tech.append(name)
+                tech_evidence.append({
+                    "temuan": name,
+                    "bukti": m.group(0)[:80],
+                    "keyakinan": "high" if len(m.group(0)) > 6 else "medium",
+                })
+                break
     css_keywords = {"inherit", "initial", "unset", "revert", "none", "auto"}
 
     colors = collections.Counter(
@@ -169,10 +239,16 @@ def main() -> None:
 
     warnings: List[str] = []
     missing: List[str] = []
-    if not css.strip():
+    svg_data = parse_svg_files(svg_paths) if svg_paths else None
+    if svg_data:
+        colors.update(svg_data["colors"])  # type: ignore[arg-type]
+        fonts.update(svg_data["fonts"])  # type: ignore[arg-type]
+        radii.update(svg_data["radii"])  # type: ignore[arg-type]
+
+    if not css.strip() and not svg_data:
         warnings.append("CSS tidak ditemukan, token desain dan layout tidak dapat dihitung.")
         missing.append("css")
-    if not js_files and "<script" not in html:
+    if not js_files and "<script" not in html and not svg_data:
         missing.append("js")
     if re.search(r'<div[^>]+id=["\'](?:root|app|__next)["\'][^>]*>\s*</div>', html, re.I):
         warnings.append("Terindikasi SPA (root kosong); konten kemungkinan dirender oleh JavaScript.")
@@ -216,9 +292,13 @@ def main() -> None:
 
     os.makedirs(args.out, exist_ok=True)
     analysis = {
-        "title": w.title,
+        "schema_version": "1.0.0",
+        "title": w.title or (os.path.basename(svg_paths[0]) if svg_paths else ""),
         "technologies": tech,
+        "technology_evidence": tech_evidence,
         "semantic_outline": w.outline[:60],
+        "svg_layers": svg_data["layers"] if svg_data else [],
+        "svg_viewboxes": svg_data["viewboxes"] if svg_data else [],
         "tag_counts": dict(w.tags.most_common(12)),
         "layout": layout,
         "components": components,

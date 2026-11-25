@@ -11,7 +11,7 @@ Skill untuk mempelajari arsitektur frontend dari sebuah URL publik dan menghasil
 
 *(Jalankan skrip dari direktori skill atau gunakan path absolut ke folder `scripts/`)*
 
-1. **Fetch halaman & aset publik**
+1. **Fetch halaman & aset publik** *(untuk URL website; lewati langkah ini jika input berupa file `.svg` desain UI/UX)*
    Jalankan:
    ```bash
    python "<SKILL_DIR>/scripts/fetch_page.py" "<URL>" --out workdir
